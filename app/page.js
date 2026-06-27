@@ -106,8 +106,21 @@ export default function SMSPage() {
                 setSmsCode(`Received: ${code}`);
                 setSmsReceived(true);
                 setFirstSmsAt(Date.now()); // start the 20-minute window
+            } else if (data.result && data.result.startsWith('STATUS_WAIT_RETRY')) {
+                // Still waiting for the new message after "request another" — show the provider's
+                // own status instead of leaving a stale message on screen.
+                setSmsCode('Waiting for the new message...');
             }
         } catch (e) { console.error(e); }
+    };
+
+    // Manual check, in case the 5-second polling missed a state change for any reason
+    // (e.g. the tab was inactive). Always safe to call — it just re-runs the same check.
+    const checkNow = async () => {
+        if (!numberData) return;
+        setLoading(true);
+        await checkStatus(numberData.activationId);
+        setLoading(false);
     };
 
     const requestAnother = async () => {
@@ -158,12 +171,18 @@ export default function SMSPage() {
                 body: JSON.stringify({ action: 'setStatus', status: 8, id: numberData.activationId, voucher })
             });
             const data = await res.json();
-            if (data.result === 'ACCESS_CANCEL' || data.result === 'ACCESS_ACTIVATION') {
+            if (data.error) {
+                // The server returned an explicit error (e.g. the code is no longer active) — show it,
+                // never fall through to printing an undefined result.
+                setMessage(data.error);
+            } else if (data.result === 'ACCESS_CANCEL' || data.result === 'ACCESS_ACTIVATION') {
                 setMessage('Number canceled and the code has been returned for reuse.');
                 resetSession();
             } else if (data.result === 'EARLY_CANCEL_DENIED') {
                 setMessage('Cannot cancel yet, please wait two minutes.');
-            } else { setMessage(`Status: ${data.result}`); }
+            } else {
+                setMessage(`Status: ${data.result ?? 'unknown response from server'}`);
+            }
         } catch { setMessage('An error occurred while canceling.'); }
         setLoading(false);
     };
@@ -258,10 +277,16 @@ export default function SMSPage() {
                             ) : (
                                 // ── Before receiving the message ──
                                 <>
-                                    <button onClick={cancelNumber} disabled={loading}
-                                        style={{ padding:'10px 20px', background:'#e53935', color:'#fff', border:'none', borderRadius:'8px', cursor:'pointer', fontWeight:'bold', opacity: loading ? 0.6 : 1 }}>
-                                        {loading ? 'Working...' : 'Cancel Number'}
-                                    </button>
+                                    <div style={{ display:'flex', gap:'12px', justifyContent:'center', flexWrap:'wrap' }}>
+                                        <button onClick={checkNow} disabled={loading}
+                                            style={{ padding:'10px 20px', background:'#fff', color:'#1a1a1a', border:'1px solid #444', borderRadius:'8px', cursor:'pointer', fontWeight:'bold', opacity: loading ? 0.6 : 1 }}>
+                                            {loading ? 'Checking...' : '🔄 Check Now'}
+                                        </button>
+                                        <button onClick={cancelNumber} disabled={loading}
+                                            style={{ padding:'10px 20px', background:'#e53935', color:'#fff', border:'none', borderRadius:'8px', cursor:'pointer', fontWeight:'bold', opacity: loading ? 0.6 : 1 }}>
+                                            {loading ? 'Working...' : 'Cancel Number'}
+                                        </button>
+                                    </div>
                                     <p style={{ fontSize:'13px', color:'#bdbdbd', marginTop:'15px' }}>* Cancellation is allowed after two minutes and returns the code for reuse.</p>
                                 </>
                             )}
