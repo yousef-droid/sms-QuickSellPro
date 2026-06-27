@@ -54,9 +54,10 @@ export async function POST(request) {
             const response = await fetch(url);
             const text = await response.text();
 
-            // When the first message arrives: don't burn the code immediately, instead let the user
-            // choose to "Finish" or "Request another message". Record the receipt time to drive the
-            // 20-minute auto-burn.
+            // The provider returns STATUS_OK:code both for the first message AND for any
+            // subsequent message received after "request another" (status=3). While waiting
+            // for that subsequent message it returns STATUS_WAIT_RETRY:lastCode, not STATUS_OK,
+            // so we only react to an actual STATUS_OK here — that part was already correct.
             if (text.startsWith('STATUS_OK')) {
                 const alreadyHasTimer = await kv.get(`first_sms_at:${voucher}`);
                 if (!alreadyHasTimer) {
@@ -101,17 +102,27 @@ export async function POST(request) {
             return NextResponse.json({ success: true });
         }
 
-        // ─── setStatus (currently used only for cancellation before any message is received) ───
+        // ─── setStatus (cancellation, at any point — before or after requesting another message) ───
         if (action === 'setStatus') {
             const isActive = await kv.sismember('active_vouchers', voucher);
-            if (!isActive) return NextResponse.json({ error: 'This code is not active.' }, { status: 400 });
+            // IMPORTANT: do not hard-block here. After "request another", the voucher is still
+            // "active" in our KV store (only the provider-side activation status changed), so this
+            // check should normally still pass. We keep it only as a basic guard, but if it fails we
+            // return a clear error the UI can actually show (instead of letting the UI read a
+            // non-existent "result" field and print "Status: undefined").
+            if (!isActive) {
+                return NextResponse.json({ error: 'This code is not active anymore.' }, { status: 400 });
+            }
 
             const url = `https://smsbower.online/stubs/handler_api.php?api_key=${API_KEY}&action=setStatus&id=${id}&status=${status}`;
             const response = await fetch(url);
             const text = await response.text();
 
             if (status === 8) {
-                // Cancel before receiving any message → the code goes back to valid as long as no code arrived
+                // Cancel → the code goes back to valid as long as the provider confirms the cancellation,
+                // regardless of whether a "request another" happened before this. Any other response
+                // (including an empty body or an unexpected status string) is treated as "could not
+                // confirm cancellation", and the code is burned to stay safe rather than silently lost.
                 await kv.srem('active_vouchers', voucher);
                 await kv.del(`first_sms_at:${voucher}`);
 
@@ -128,7 +139,8 @@ export async function POST(request) {
                 await kv.sadd('burned_vouchers', voucher);
             }
 
-            return NextResponse.json({ result: text });
+            // Always return a non-empty, predictable string so the UI never has to display "undefined".
+            return NextResponse.json({ result: text || 'NO_RESPONSE_FROM_PROVIDER' });
         }
 
         return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
