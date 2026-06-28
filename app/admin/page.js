@@ -37,7 +37,13 @@ export default function AdminDashboard() {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ action: 'add_code', code: newCode, password })
         });
-        if (res.ok) { setNewCode(''); fetchCodes(password); }
+        const data = await res.json();
+        if (res.ok) {
+            setNewCode('');
+            fetchCodes(password);
+        } else {
+            alert(data.error || 'Could not add this code.');
+        }
     };
 
     const deleteCode = async (code) => {
