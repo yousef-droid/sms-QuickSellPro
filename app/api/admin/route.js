@@ -66,18 +66,28 @@ export async function POST(request) {
         if (action === 'add_code') {
             if (!code) return NextResponse.json({ error: 'Please enter the code' }, { status: 400 });
 
-            // A code name must exist in exactly one bucket. If this name was previously burned
-            // (or somehow still marked active), remove it from those sets first — otherwise the
-            // burned/active counters keep counting an old entry that the admin is now reusing,
-            // and the "Burned" total never goes down even though the code is valid again.
-            const wasBurned = await kv.sismember('burned_vouchers', code);
-            const wasActive = await kv.sismember('active_vouchers', code);
-            if (wasBurned) await kv.srem('burned_vouchers', code);
-            if (wasActive) await kv.srem('active_vouchers', code);
-            await kv.del(`first_sms_at:${code}`);
+            // A code name must be unique across all three buckets. If it's currently burned or
+            // active, reject the add entirely and tell the admin exactly why — don't silently
+            // clean it up and re-add it, since that would let an admin accidentally reuse a name
+            // that's still tied to a previous (possibly still-in-progress) activation.
+            const [isValid, isActive, isBurned] = await Promise.all([
+                kv.sismember('valid_vouchers', code),
+                kv.sismember('active_vouchers', code),
+                kv.sismember('burned_vouchers', code),
+            ]);
+
+            if (isBurned) {
+                return NextResponse.json({ error: `This code already exists in the Burned list. Choose a different name.` }, { status: 400 });
+            }
+            if (isActive) {
+                return NextResponse.json({ error: `This code already exists in the Active list (currently in use). Choose a different name.` }, { status: 400 });
+            }
+            if (isValid) {
+                return NextResponse.json({ error: `This code is already in the Valid list.` }, { status: 400 });
+            }
 
             await kv.sadd('valid_vouchers', code);
-            return NextResponse.json({ success: true, reused: wasBurned || wasActive });
+            return NextResponse.json({ success: true });
         }
 
         // Deleting a code only needs the single admin password (already verified above)
@@ -86,6 +96,7 @@ export async function POST(request) {
             await kv.srem('active_vouchers', code);
             await kv.srem('burned_vouchers', code);
             await kv.del(`first_sms_at:${code}`);
+            await kv.del(`requested_another:${code}`);
             return NextResponse.json({ success: true });
         }
 
@@ -95,6 +106,7 @@ export async function POST(request) {
             await kv.srem('burned_vouchers', code);
             await kv.sadd('valid_vouchers', code);
             await kv.del(`first_sms_at:${code}`);
+            await kv.del(`requested_another:${code}`);
             return NextResponse.json({ success: true });
         }
 
