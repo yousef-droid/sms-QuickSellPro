@@ -27,6 +27,7 @@ export async function POST(request) {
             }
             await kv.srem('valid_vouchers', voucher);
             await kv.sadd('active_vouchers', voucher);
+            await kv.del(`requested_another:${voucher}`);
 
             const url = `https://smsbower.online/stubs/handler_api.php?api_key=${API_KEY}&action=getNumber&service=${service || 'bz'}&country=${country || '117'}`;
             const response = await fetch(url);
@@ -83,6 +84,12 @@ export async function POST(request) {
             // fixed from the very first message received on this number — requesting another message
             // is free and unlimited *within* that same original window, not a way to extend it.
 
+            // Mark this voucher as having requested another message on this number. Once this flag
+            // is set, a later cancel (status=8) must always burn the code locally — the number has
+            // already been used to receive at least one real message, so it can never be returned to
+            // the valid pool again, regardless of what the provider's cancel endpoint says.
+            await kv.set(`requested_another:${voucher}`, true);
+
             return NextResponse.json({ result: text });
         }
 
@@ -99,6 +106,7 @@ export async function POST(request) {
             await kv.srem('valid_vouchers', voucher);
             await kv.sadd('burned_vouchers', voucher);
             await kv.del(`first_sms_at:${voucher}`);
+            await kv.del(`requested_another:${voucher}`);
 
             return NextResponse.json({ success: true });
         }
@@ -120,31 +128,37 @@ export async function POST(request) {
             const text = await response.text();
 
             if (status === 8) {
-                // Cancel was requested. The provider can answer in three different ways here:
-                //  1) ACCESS_CANCEL          → cancellation confirmed, the code goes back to "valid".
-                //  2) EARLY_CANCEL_DENIED /
-                //     ACCESS_RUSSIAN_CRACK /
-                //     NO_ACTIVATION          → the provider REFUSED to cancel right now (too early,
-                //                              or a "request another" is in progress). This is NOT a
-                //                              failure of the code itself — the activation is simply
-                //                              still alive on the provider's side, so we must leave it
-                //                              exactly as it was (active) and let the user try again,
-                //                              keep waiting, or press Finish normally.
-                //  3) anything else / empty   → an unexpected/unknown response. We still don't burn a
-                //                              perfectly good code just because of an ambiguous network
-                //                              reply; we leave it active and let the UI show the raw
-                //                              status so the user can retry.
-                if (text === 'ACCESS_CANCEL') {
+                const hadRequestedAnother = await kv.get(`requested_another:${voucher}`);
+
+                if (hadRequestedAnother) {
+                    // This number was already used to request (and presumably receive) at least one
+                    // extra message. Once that happens, the number can never go back to "valid" —
+                    // canceling now always burns the code locally, regardless of what the provider's
+                    // cancel endpoint returns (the provider call above is still made on a best-effort
+                    // basis to free the number on their side, but our own bookkeeping doesn't wait on it).
                     await kv.srem('active_vouchers', voucher);
                     await kv.del(`first_sms_at:${voucher}`);
-                    await kv.sadd('valid_vouchers', voucher);
+                    await kv.del(`requested_another:${voucher}`);
+                    await kv.sadd('burned_vouchers', voucher);
+                } else {
+                    // No "request another" happened yet on this number. The provider can answer:
+                    //  1) ACCESS_CANCEL → cancellation confirmed, the code goes back to "valid".
+                    //  2) EARLY_CANCEL_DENIED / anything else → the provider refused (e.g. too early).
+                    //     This is not a failure of the code itself, so we leave it exactly as it was
+                    //     (active) and let the user try again, keep waiting, or press Finish normally.
+                    if (text === 'ACCESS_CANCEL') {
+                        await kv.srem('active_vouchers', voucher);
+                        await kv.del(`first_sms_at:${voucher}`);
+                        await kv.sadd('valid_vouchers', voucher);
+                    }
+                    // else: do nothing to the voucher's bucket — it stays active, untouched, reusable.
                 }
-                // else: do nothing to the voucher's bucket — it stays active, untouched, reusable.
             }
 
             if (status === 6) {
                 await kv.srem('active_vouchers', voucher);
                 await kv.del(`first_sms_at:${voucher}`);
+                await kv.del(`requested_another:${voucher}`);
                 await kv.sadd('burned_vouchers', voucher);
             }
 
