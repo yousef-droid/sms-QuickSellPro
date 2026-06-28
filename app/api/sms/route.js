@@ -111,28 +111,56 @@ export async function POST(request) {
             return NextResponse.json({ success: true });
         }
 
-        // ─── setStatus (cancellation, at any point) ───
+        // ─── setStatus (cancellation, at any point — before or after receiving a message) ───
         if (action === 'setStatus') {
             const isActive = await kv.sismember('active_vouchers', voucher);
             if (!isActive) {
                 return NextResponse.json({ error: 'This code is not active anymore.' }, { status: 400 });
             }
 
-            // ── Cancel (status=8): purely local and immediate. ──
-            // We deliberately do NOT call the provider's cancel endpoint here and do NOT wait for
-            // or depend on its response. The provider enforces its own 2-minute minimum hold before
-            // it will accept a cancellation, which used to surface to the user as "please wait two
-            // minutes" — that wait is now removed entirely. Pressing Cancel burns the code in our
-            // own database right away, at any time, regardless of how long ago the number was issued.
-            // NOTE: this means the number itself stays reserved/active on the provider's side (we
-            // never told them to release it), so it may still count toward provider-side usage.
             if (status === 8) {
-                await kv.srem('active_vouchers', voucher);
-                await kv.del(`first_sms_at:${voucher}`);
-                await kv.del(`requested_another:${voucher}`);
-                await kv.sadd('burned_vouchers', voucher);
+                // `first_sms_at` is set the moment the FIRST real message has ever been received on
+                // this number (see getStatus below) and is never cleared by "Request Another" — so its
+                // presence means "at least one message has already arrived", regardless of whether the
+                // user is now looking at that first message or waiting for an additional one.
+                const firstSmsAt = await kv.get(`first_sms_at:${voucher}`);
 
-                return NextResponse.json({ result: 'LOCAL_CANCEL_BURNED', outcome: 'burned' });
+                if (firstSmsAt) {
+                    // At least one message was already received on this number. The number has
+                    // already done its job, so cancellation is allowed instantly and locally — no
+                    // need to call or wait on the provider at all. Burn the code right away.
+                    await kv.srem('active_vouchers', voucher);
+                    await kv.del(`first_sms_at:${voucher}`);
+                    await kv.del(`requested_another:${voucher}`);
+                    await kv.sadd('burned_vouchers', voucher);
+
+                    return NextResponse.json({ result: 'LOCAL_CANCEL_BURNED', outcome: 'burned' });
+                }
+
+                // No message has been received yet on this number — fall back to the original
+                // provider-based cancel flow, since this is the case where smsbower enforces its own
+                // 2-minute minimum hold before it will accept the cancellation.
+                const url = `https://smsbower.online/stubs/handler_api.php?api_key=${API_KEY}&action=setStatus&id=${id}&status=8`;
+                const response = await fetch(url);
+                const text = await response.text();
+
+                if (text === 'ACCESS_CANCEL') {
+                    // Cancellation confirmed by the provider → the code goes back to "valid" for reuse.
+                    await kv.srem('active_vouchers', voucher);
+                    await kv.del(`first_sms_at:${voucher}`);
+                    await kv.del(`requested_another:${voucher}`);
+                    await kv.sadd('valid_vouchers', voucher);
+                    return NextResponse.json({ result: text, outcome: 'returned_to_valid' });
+                }
+
+                if (text === 'EARLY_CANCEL_DENIED') {
+                    // Provider refused — too early (within its own 2-minute window). Leave the
+                    // voucher exactly as it was; the user can try again shortly or press Finish.
+                    return NextResponse.json({ result: text, outcome: 'early_cancel_denied' });
+                }
+
+                // Any other/unexpected response: leave the voucher untouched rather than guessing.
+                return NextResponse.json({ result: text || 'NO_RESPONSE_FROM_PROVIDER', outcome: 'still_active' });
             }
 
             // ── Any other status (e.g. 6 = finish) still goes through the provider as before. ──
