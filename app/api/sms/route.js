@@ -28,6 +28,13 @@ export async function POST(request) {
             await kv.srem('valid_vouchers', voucher);
             await kv.sadd('active_vouchers', voucher);
             await kv.del(`requested_another:${voucher}`);
+            // Clear any stale "first message received" timestamp left over from a previous
+            // session on this same voucher name (e.g. an earlier activation that received a
+            // message and was later returned/reset). Without this, a brand-new number pull would
+            // incorrectly inherit that old timestamp, making the server think a message had
+            // already arrived on THIS session — which made Cancel force-burn the code instantly
+            // even though the user hadn't received anything yet.
+            await kv.del(`first_sms_at:${voucher}`);
 
             const url = `https://smsbower.online/stubs/handler_api.php?api_key=${API_KEY}&action=getNumber&service=${service || 'bz'}&country=${country || '117'}`;
             const response = await fetch(url);
