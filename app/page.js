@@ -17,7 +17,6 @@ export default function SMSPage() {
     const [smsReceived, setSmsReceived] = useState(false);
     const [firstSmsAt, setFirstSmsAt] = useState(null);
     const [remainingMs, setRemainingMs] = useState(null);
-    const [hasRequestedAnother, setHasRequestedAnother] = useState(false);
 
     const tickRef = useRef(null);
 
@@ -31,18 +30,17 @@ export default function SMSPage() {
                 setVoucher(parsed.voucher);
                 setSmsReceived(parsed.smsReceived || false);
                 setFirstSmsAt(parsed.firstSmsAt || null);
-                setHasRequestedAnother(parsed.hasRequestedAnother || false);
             }
         } catch (e) { localStorage.removeItem('smsSession'); }
     }, []);
 
     useEffect(() => {
         if (numberData || voucher) {
-            localStorage.setItem('smsSession', JSON.stringify({ numberData, smsCode, voucher, smsReceived, firstSmsAt, hasRequestedAnother }));
+            localStorage.setItem('smsSession', JSON.stringify({ numberData, smsCode, voucher, smsReceived, firstSmsAt }));
         } else {
             localStorage.removeItem('smsSession');
         }
-    }, [numberData, smsCode, voucher, smsReceived, firstSmsAt, hasRequestedAnother]);
+    }, [numberData, smsCode, voucher, smsReceived, firstSmsAt]);
 
     // Check for the message every 5 seconds — only while no message has been received yet
     useEffect(() => {
@@ -92,7 +90,6 @@ export default function SMSPage() {
                 setSmsCode('Waiting for message...');
                 setSmsReceived(false);
                 setFirstSmsAt(null);
-                setHasRequestedAnother(false);
                 setMessage('Number retrieved successfully!');
             } else { setMessage('No numbers available right now.'); }
         } catch { setMessage('A server connection error occurred.'); }
@@ -146,7 +143,6 @@ export default function SMSPage() {
                 // original 20 minutes.
                 setSmsCode('Waiting for a new message...');
                 setSmsReceived(false);
-                setHasRequestedAnother(true);
                 setMessage('Another message requested, please wait...');
             }
         } catch { setMessage('An error occurred.'); }
@@ -180,33 +176,18 @@ export default function SMSPage() {
             });
             const data = await res.json();
 
-            if (hasRequestedAnother) {
-                // The user already requested an additional message on this number before canceling.
-                // The server always burns the code locally in this case, regardless of what the
-                // provider's cancel endpoint returned — so from the UI's side this is always a final,
-                // successful cancel-and-burn, never an error or a "still active" state.
-                setMessage('Number canceled. Since another message had already been requested on it, the code has been burned and cannot be reused.');
-                resetSession();
-                setLoading(false);
-                return;
-            }
-
             if (data.error) {
                 // The server returned an explicit error (e.g. the code is no longer active) — show it,
                 // never fall through to printing an undefined result. The session is left untouched.
                 setMessage(data.error);
-            } else if (data.result === 'ACCESS_CANCEL' || data.result === 'ACCESS_ACTIVATION') {
-                setMessage('Number canceled and the code has been returned for reuse.');
-                resetSession();
-            } else if (data.result === 'EARLY_CANCEL_DENIED') {
-                setMessage('Cannot cancel yet, please wait two minutes.');
-                // numberData stays as-is — the activation is still alive and usable.
-            } else {
-                // An unrecognized response from the provider, with no "request another" involved.
-                // The code was NOT burned by the server in this branch, so we keep the current
-                // session exactly as it was instead of leaving the UI in a broken/ambiguous state.
-                setMessage('Could not cancel right now. Your number and code are still active — you can try again or press Finish.');
+                setLoading(false);
+                return;
             }
+
+            // Cancel is now purely local and immediate — the server always burns the code right
+            // away, with no waiting period and no dependency on the provider's response.
+            setMessage('Number canceled and the code has been burned.');
+            resetSession();
         } catch { setMessage('A connection error occurred while canceling. Your number is still active — please try again.'); }
         setLoading(false);
     };
@@ -214,7 +195,7 @@ export default function SMSPage() {
     const resetSession = () => {
         setNumberData(null); setVoucher('');
         setSmsCode('Waiting for message...'); setSmsReceived(false);
-        setFirstSmsAt(null); setRemainingMs(null); setHasRequestedAnother(false);
+        setFirstSmsAt(null); setRemainingMs(null);
         localStorage.removeItem('smsSession');
     };
 
@@ -316,7 +297,7 @@ export default function SMSPage() {
                                             {loading ? 'Working...' : 'Cancel Number'}
                                         </button>
                                     </div>
-                                    <p style={{ fontSize:'13px', color:'#bdbdbd', marginTop:'15px' }}>* Cancellation is allowed after two minutes and returns the code for reuse.</p>
+                                    <p style={{ fontSize:'13px', color:'#bdbdbd', marginTop:'15px' }}>* Cancelling burns this code immediately — it cannot be reused.</p>
                                 </>
                             )}
                         </div>
