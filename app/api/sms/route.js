@@ -111,59 +111,47 @@ export async function POST(request) {
             return NextResponse.json({ success: true });
         }
 
-        // ─── setStatus (cancellation, at any point — before or after requesting another message) ───
+        // ─── setStatus (cancellation, at any point) ───
         if (action === 'setStatus') {
             const isActive = await kv.sismember('active_vouchers', voucher);
-            // IMPORTANT: do not hard-block here. After "request another", the voucher is still
-            // "active" in our KV store (only the provider-side activation status changed), so this
-            // check should normally still pass. We keep it only as a basic guard, but if it fails we
-            // return a clear error the UI can actually show (instead of letting the UI read a
-            // non-existent "result" field and print "Status: undefined").
             if (!isActive) {
                 return NextResponse.json({ error: 'This code is not active anymore.' }, { status: 400 });
             }
 
+            // ── Cancel (status=8): purely local and immediate. ──
+            // We deliberately do NOT call the provider's cancel endpoint here and do NOT wait for
+            // or depend on its response. The provider enforces its own 2-minute minimum hold before
+            // it will accept a cancellation, which used to surface to the user as "please wait two
+            // minutes" — that wait is now removed entirely. Pressing Cancel burns the code in our
+            // own database right away, at any time, regardless of how long ago the number was issued.
+            // NOTE: this means the number itself stays reserved/active on the provider's side (we
+            // never told them to release it), so it may still count toward provider-side usage.
+            if (status === 8) {
+                await kv.srem('active_vouchers', voucher);
+                await kv.del(`first_sms_at:${voucher}`);
+                await kv.del(`requested_another:${voucher}`);
+                await kv.sadd('burned_vouchers', voucher);
+
+                return NextResponse.json({ result: 'LOCAL_CANCEL_BURNED', outcome: 'burned' });
+            }
+
+            // ── Any other status (e.g. 6 = finish) still goes through the provider as before. ──
             const url = `https://smsbower.online/stubs/handler_api.php?api_key=${API_KEY}&action=setStatus&id=${id}&status=${status}`;
             const response = await fetch(url);
             const text = await response.text();
 
-            if (status === 8) {
-                const hadRequestedAnother = await kv.get(`requested_another:${voucher}`);
-
-                if (hadRequestedAnother) {
-                    // This number was already used to request (and presumably receive) at least one
-                    // extra message. Once that happens, the number can never go back to "valid" —
-                    // canceling now always burns the code locally, regardless of what the provider's
-                    // cancel endpoint returns (the provider call above is still made on a best-effort
-                    // basis to free the number on their side, but our own bookkeeping doesn't wait on it).
-                    await kv.srem('active_vouchers', voucher);
-                    await kv.del(`first_sms_at:${voucher}`);
-                    await kv.del(`requested_another:${voucher}`);
-                    await kv.sadd('burned_vouchers', voucher);
-                } else {
-                    // No "request another" happened yet on this number. The provider can answer:
-                    //  1) ACCESS_CANCEL → cancellation confirmed, the code goes back to "valid".
-                    //  2) EARLY_CANCEL_DENIED / anything else → the provider refused (e.g. too early).
-                    //     This is not a failure of the code itself, so we leave it exactly as it was
-                    //     (active) and let the user try again, keep waiting, or press Finish normally.
-                    if (text === 'ACCESS_CANCEL') {
-                        await kv.srem('active_vouchers', voucher);
-                        await kv.del(`first_sms_at:${voucher}`);
-                        await kv.sadd('valid_vouchers', voucher);
-                    }
-                    // else: do nothing to the voucher's bucket — it stays active, untouched, reusable.
-                }
-            }
+            let outcome = 'still_active';
 
             if (status === 6) {
                 await kv.srem('active_vouchers', voucher);
                 await kv.del(`first_sms_at:${voucher}`);
                 await kv.del(`requested_another:${voucher}`);
                 await kv.sadd('burned_vouchers', voucher);
+                outcome = 'burned';
             }
 
             // Always return a non-empty, predictable string so the UI never has to display "undefined".
-            return NextResponse.json({ result: text || 'NO_RESPONSE_FROM_PROVIDER' });
+            return NextResponse.json({ result: text || 'NO_RESPONSE_FROM_PROVIDER', outcome });
         }
 
         return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
