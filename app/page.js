@@ -184,10 +184,29 @@ export default function SMSPage() {
                 return;
             }
 
-            // Cancel is now purely local and immediate — the server always burns the code right
-            // away, with no waiting period and no dependency on the provider's response.
-            setMessage('Number canceled and the code has been burned.');
-            resetSession();
+            // `outcome` is the server's authoritative answer for what actually happened to the
+            // voucher in the database. We trust this field alone — never local component state.
+            switch (data.outcome) {
+                case 'burned':
+                    // At least one message had already been received on this number, so the cancel
+                    // was instant and local — no provider wait involved.
+                    setMessage('Number canceled and the code has been burned.');
+                    resetSession();
+                    break;
+                case 'returned_to_valid':
+                    setMessage('Number canceled and the code has been returned for reuse.');
+                    resetSession();
+                    break;
+                case 'early_cancel_denied':
+                    setMessage('Cannot cancel yet, please wait two minutes.');
+                    // numberData stays as-is — the activation is still alive and usable.
+                    break;
+                default:
+                    // 'still_active' or anything unexpected: the code was NOT burned by the server,
+                    // so keep the current session exactly as it was instead of leaving the UI in a
+                    // broken/ambiguous state.
+                    setMessage('Could not cancel right now. Your number and code are still active — you can try again or press Finish.');
+            }
         } catch { setMessage('A connection error occurred while canceling. Your number is still active — please try again.'); }
         setLoading(false);
     };
@@ -297,7 +316,7 @@ export default function SMSPage() {
                                             {loading ? 'Working...' : 'Cancel Number'}
                                         </button>
                                     </div>
-                                    <p style={{ fontSize:'13px', color:'#bdbdbd', marginTop:'15px' }}>* Cancelling burns this code immediately — it cannot be reused.</p>
+                                    <p style={{ fontSize:'13px', color:'#bdbdbd', marginTop:'15px' }}>* Before any message arrives, cancellation may require a short wait and returns the code for reuse. After a message has been received, cancellation is instant and burns the code.</p>
                                 </>
                             )}
                         </div>
