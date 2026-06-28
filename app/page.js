@@ -51,10 +51,12 @@ export default function SMSPage() {
         return () => clearInterval(interval);
     }, [numberData, smsReceived]);
 
-    // 20-minute countdown after the first message is received + local auto-burn reflection when it ends
+    // 20-minute countdown starting from the FIRST message ever received on this number.
+    // Keeps running whether we're showing a received message or waiting for the next one
+    // (after "Request Another"), since the window is fixed and doesn't restart per message.
     useEffect(() => {
         clearInterval(tickRef.current);
-        if (!firstSmsAt || !smsReceived) { setRemainingMs(null); return; }
+        if (!firstSmsAt) { setRemainingMs(null); return; }
 
         const tick = () => {
             const left = AUTO_BURN_MS - (Date.now() - firstSmsAt);
@@ -71,7 +73,7 @@ export default function SMSPage() {
         tick();
         tickRef.current = setInterval(tick, 1000);
         return () => clearInterval(tickRef.current);
-    }, [firstSmsAt, smsReceived]);
+    }, [firstSmsAt]);
 
     const getNumber = async () => {
         if (!voucher.trim()) { setMessage('Please enter your activation code first.'); return; }
@@ -135,10 +137,12 @@ export default function SMSPage() {
             if (data.error) {
                 setMessage(data.error);
             } else {
-                // Back to waiting for a new message on the same number, and reset the burn timer
+                // Back to waiting for a new message on the same number. The 20-minute auto-burn
+                // window is NOT reset here — it keeps counting down from the first message, so the
+                // user can request as many additional messages as they like, all within that same
+                // original 20 minutes.
                 setSmsCode('Waiting for a new message...');
                 setSmsReceived(false);
-                setFirstSmsAt(null);
                 setMessage('Another message requested, please wait...');
             }
         } catch { setMessage('An error occurred.'); }
@@ -173,17 +177,22 @@ export default function SMSPage() {
             const data = await res.json();
             if (data.error) {
                 // The server returned an explicit error (e.g. the code is no longer active) — show it,
-                // never fall through to printing an undefined result.
+                // never fall through to printing an undefined result. The session is left untouched.
                 setMessage(data.error);
             } else if (data.result === 'ACCESS_CANCEL' || data.result === 'ACCESS_ACTIVATION') {
                 setMessage('Number canceled and the code has been returned for reuse.');
                 resetSession();
             } else if (data.result === 'EARLY_CANCEL_DENIED') {
                 setMessage('Cannot cancel yet, please wait two minutes.');
+                // numberData stays as-is — the activation is still alive and usable.
             } else {
-                setMessage(`Status: ${data.result ?? 'unknown response from server'}`);
+                // The provider refused the cancellation for any other reason (e.g. a "request another"
+                // was already in progress on this number, or an unrecognized response). The activation
+                // is still alive on the provider's side and the code was NOT burned by the server, so we
+                // keep the current session exactly as it was instead of leaving the UI in a broken state.
+                setMessage('Could not cancel right now (the number may still be in use for another message). Your number and code are still active — you can try again or press Finish.');
             }
-        } catch { setMessage('An error occurred while canceling.'); }
+        } catch { setMessage('A connection error occurred while canceling. Your number is still active — please try again.'); }
         setLoading(false);
     };
 
@@ -275,8 +284,13 @@ export default function SMSPage() {
                                     </div>
                                 </div>
                             ) : (
-                                // ── Before receiving the message ──
+                                // ── Before receiving a message (or waiting for an additional one after Request Another) ──
                                 <>
+                                    {remainingMs !== null && (
+                                        <p style={{ color:'#ffca28', fontSize:'14px', margin:'0 0 15px' }}>
+                                            ⏳ The code will be burned automatically in <b>{formatRemaining(remainingMs)}</b> if no action is taken
+                                        </p>
+                                    )}
                                     <div style={{ display:'flex', gap:'12px', justifyContent:'center', flexWrap:'wrap' }}>
                                         <button onClick={checkNow} disabled={loading}
                                             style={{ padding:'10px 20px', background:'#fff', color:'#1a1a1a', border:'1px solid #444', borderRadius:'8px', cursor:'pointer', fontWeight:'bold', opacity: loading ? 0.6 : 1 }}>
