@@ -79,8 +79,9 @@ export async function POST(request) {
             const response = await fetch(url);
             const text = await response.text();
 
-            // Reset the auto-burn timer to give a full window while waiting for the new message
-            await kv.del(`first_sms_at:${voucher}`);
+            // NOTE: we deliberately do NOT reset/delete `first_sms_at` here. The 20-minute window is
+            // fixed from the very first message received on this number — requesting another message
+            // is free and unlimited *within* that same original window, not a way to extend it.
 
             return NextResponse.json({ result: text });
         }
@@ -119,18 +120,26 @@ export async function POST(request) {
             const text = await response.text();
 
             if (status === 8) {
-                // Cancel → the code goes back to valid as long as the provider confirms the cancellation,
-                // regardless of whether a "request another" happened before this. Any other response
-                // (including an empty body or an unexpected status string) is treated as "could not
-                // confirm cancellation", and the code is burned to stay safe rather than silently lost.
-                await kv.srem('active_vouchers', voucher);
-                await kv.del(`first_sms_at:${voucher}`);
-
+                // Cancel was requested. The provider can answer in three different ways here:
+                //  1) ACCESS_CANCEL          → cancellation confirmed, the code goes back to "valid".
+                //  2) EARLY_CANCEL_DENIED /
+                //     ACCESS_RUSSIAN_CRACK /
+                //     NO_ACTIVATION          → the provider REFUSED to cancel right now (too early,
+                //                              or a "request another" is in progress). This is NOT a
+                //                              failure of the code itself — the activation is simply
+                //                              still alive on the provider's side, so we must leave it
+                //                              exactly as it was (active) and let the user try again,
+                //                              keep waiting, or press Finish normally.
+                //  3) anything else / empty   → an unexpected/unknown response. We still don't burn a
+                //                              perfectly good code just because of an ambiguous network
+                //                              reply; we leave it active and let the UI show the raw
+                //                              status so the user can retry.
                 if (text === 'ACCESS_CANCEL') {
+                    await kv.srem('active_vouchers', voucher);
+                    await kv.del(`first_sms_at:${voucher}`);
                     await kv.sadd('valid_vouchers', voucher);
-                } else {
-                    await kv.sadd('burned_vouchers', voucher);
                 }
+                // else: do nothing to the voucher's bucket — it stays active, untouched, reusable.
             }
 
             if (status === 6) {
