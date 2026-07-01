@@ -7,6 +7,7 @@ export default function AdminDashboard() {
     const [validCodes, setValidCodes] = useState([]);
     const [activeCodes, setActiveCodes] = useState([]);
     const [burnedCodes, setBurnedCodes] = useState([]);
+    const [premiumCodes, setPremiumCodes] = useState([]);
     const [newCode, setNewCode] = useState('');
     const [loading, setLoading] = useState(false);
     const [loginError, setLoginError] = useState('');
@@ -25,6 +26,7 @@ export default function AdminDashboard() {
             setValidCodes(data.valid || []);
             setActiveCodes(data.active || []);
             setBurnedCodes(data.burned || []);
+            setPremiumCodes(data.premium || []);
             setIsLoggedIn(true);
         } else {
             setLoginError(data.error || 'Login failed.');
@@ -71,7 +73,7 @@ export default function AdminDashboard() {
     const logout = () => {
         setIsLoggedIn(false);
         setPassword('');
-        setValidCodes([]); setActiveCodes([]); setBurnedCodes([]);
+        setValidCodes([]); setActiveCodes([]); setBurnedCodes([]); setPremiumCodes([]);
         setConfirmAction(null);
     };
 
@@ -227,6 +229,19 @@ export default function AdminDashboard() {
                             <li key={code} style={liStyle}>
                                 <span style={{ textDecoration:'line-through', color:'#ff8a80' }}>{code}</span>
                                 <ActionButtons code={code} type="burned" />
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+
+                {/* Premium */}
+                <div style={{ flex:1, minWidth:'220px', background:'#1a1500', padding:'20px', borderRadius:'15px', border:'1px solid #ffca28' }}>
+                    <h3 style={{ color:'#ffca28', textAlign:'center', marginBottom:'12px' }}>⭐ Premium ({premiumCodes.length})</h3>
+                    <ul style={{ listStyle:'none', padding:0, margin:0 }}>
+                        {premiumCodes.map(code => (
+                            <li key={code} style={liStyle}>
+                                <span style={{ color:'#ffca28', fontWeight:'bold' }}>{code}</span>
+                                <ActionButtons code={code} type="premium" />
                             </li>
                         ))}
                     </ul>
