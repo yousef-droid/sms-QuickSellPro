@@ -1,37 +1,80 @@
 'use client';
 import { useState, useEffect, useRef } from 'react';
 
-const AUTO_BURN_MS = 20 * 60 * 1000; // 20 minutes — matches the server-side duration
+const AUTO_BURN_MS = 20 * 60 * 1000;
+
+// Standard countries (cheap) — available to all vouchers
+const STANDARD_COUNTRIES = [
+    { id: '117', name: 'Portugal PT' },
+    { id: '43',  name: 'Germany' },
+    { id: '16',  name: 'United Kingdom' },
+    { id: '73',  name: 'Brazil' },
+    { id: '52',  name: 'Thailand' },
+    { id: '78',  name: 'France' },
+    { id: '6',   name: 'Indonesia' },
+    { id: '33',  name: 'Colombia' },
+    { id: '32',  name: 'Romania' },
+    { id: '37',  name: 'Morocco' },
+    { id: '10',  name: 'Viet Nam' },
+    { id: '4',   name: 'Philippines' },
+];
+
+// Premium countries (expensive) — only available to PREM-... vouchers
+const PREMIUM_COUNTRIES = [
+    { id: '187', name: 'United States' },
+    { id: '53',  name: 'Saudi Arabia' },
+    { id: '67',  name: 'New Zealand' },
+    { id: '163', name: 'Finland' },
+    { id: '66',  name: 'Pakistan' },
+    { id: '95',  name: 'UAE' },
+    { id: '116', name: 'Jordan' },
+    { id: '54',  name: 'Mexico' },
+    { id: '111', name: 'Qatar' },
+];
+
+const isPremiumVoucher = (v) => typeof v === 'string' && v.toUpperCase().startsWith('PREM-');
+
+const services = [{ id: 'bz', name: 'Blizzard' }];
 
 export default function SMSPage() {
-    const countries = [{ id: '117', name: 'Portugal PT' }];
-    const services = [{ id: 'bz', name: 'Blizzard' }];
-
-    const [country, setCountry] = useState(countries[0].id);
-    const [service, setService] = useState(services[0].id);
-    const [voucher, setVoucher] = useState('');
-    const [numberData, setNumberData] = useState(null);
-    const [smsCode, setSmsCode] = useState('Waiting for message...');
-    const [loading, setLoading] = useState(false);
-    const [message, setMessage] = useState('');
+    const [voucher, setVoucher]         = useState('');
+    const [country, setCountry]         = useState(STANDARD_COUNTRIES[0].id);
+    const [service, setService]         = useState(services[0].id);
+    const [numberData, setNumberData]   = useState(null);
+    const [smsCode, setSmsCode]         = useState('Waiting for message...');
+    const [loading, setLoading]         = useState(false);
+    const [message, setMessage]         = useState('');
     const [smsReceived, setSmsReceived] = useState(false);
-    const [firstSmsAt, setFirstSmsAt] = useState(null);
+    const [firstSmsAt, setFirstSmsAt]   = useState(null);
     const [remainingMs, setRemainingMs] = useState(null);
 
     const tickRef = useRef(null);
 
+    // Countries available depend on whether the entered voucher is premium
+    const availableCountries = isPremiumVoucher(voucher)
+        ? [...STANDARD_COUNTRIES, ...PREMIUM_COUNTRIES]
+        : STANDARD_COUNTRIES;
+
+    // When voucher type changes, reset the country selection to the first available option
+    // so a standard-country selection doesn't get stuck when switching to premium and back.
+    useEffect(() => {
+        setCountry(availableCountries[0].id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isPremiumVoucher(voucher)]);
+
+    // ── Persist / restore session ──
     useEffect(() => {
         try {
-            const savedData = localStorage.getItem('smsSession');
-            if (savedData) {
-                const parsed = JSON.parse(savedData);
-                setNumberData(parsed.numberData);
-                setSmsCode(parsed.smsCode);
-                setVoucher(parsed.voucher);
-                setSmsReceived(parsed.smsReceived || false);
-                setFirstSmsAt(parsed.firstSmsAt || null);
+            const saved = localStorage.getItem('smsSession');
+            if (saved) {
+                const p = JSON.parse(saved);
+                setNumberData(p.numberData);
+                setSmsCode(p.smsCode);
+                setVoucher(p.voucher);
+                setSmsReceived(p.smsReceived || false);
+                setFirstSmsAt(p.firstSmsAt || null);
             }
-        } catch (e) { localStorage.removeItem('smsSession'); }
+        } catch { localStorage.removeItem('smsSession'); }
     }, []);
 
     useEffect(() => {
@@ -42,7 +85,7 @@ export default function SMSPage() {
         }
     }, [numberData, smsCode, voucher, smsReceived, firstSmsAt]);
 
-    // Check for the message every 5 seconds — only while no message has been received yet
+    // ── Polling every 5 s while waiting for a message ──
     useEffect(() => {
         let interval;
         if (numberData && numberData.activationId && !smsReceived) {
@@ -51,19 +94,15 @@ export default function SMSPage() {
         return () => clearInterval(interval);
     }, [numberData, smsReceived]);
 
-    // 20-minute countdown starting from the FIRST message ever received on this number.
-    // Keeps running whether we're showing a received message or waiting for the next one
-    // (after "Request Another"), since the window is fixed and doesn't restart per message.
+    // ── 20-minute countdown ──
     useEffect(() => {
         clearInterval(tickRef.current);
         if (!firstSmsAt) { setRemainingMs(null); return; }
-
         const tick = () => {
             const left = AUTO_BURN_MS - (Date.now() - firstSmsAt);
             if (left <= 0) {
                 setRemainingMs(0);
                 clearInterval(tickRef.current);
-                // The code is actually burned server-side via the cron job; this just reflects it in the UI
                 setMessage('Time limit reached, the code has been burned automatically.');
                 resetSession();
             } else {
@@ -107,17 +146,13 @@ export default function SMSPage() {
                 const code = data.result.split(':')[1];
                 setSmsCode(`Received: ${code}`);
                 setSmsReceived(true);
-                setFirstSmsAt(Date.now()); // start the 20-minute window
+                setFirstSmsAt(Date.now());
             } else if (data.result && data.result.startsWith('STATUS_WAIT_RETRY')) {
-                // Still waiting for the new message after "request another" — show the provider's
-                // own status instead of leaving a stale message on screen.
                 setSmsCode('Waiting for the new message...');
             }
         } catch (e) { console.error(e); }
     };
 
-    // Manual check, in case the 5-second polling missed a state change for any reason
-    // (e.g. the tab was inactive). Always safe to call — it just re-runs the same check.
     const checkNow = async () => {
         if (!numberData) return;
         setLoading(true);
@@ -134,13 +169,8 @@ export default function SMSPage() {
                 body: JSON.stringify({ action: 'requestAnother', id: numberData.activationId, voucher })
             });
             const data = await res.json();
-            if (data.error) {
-                setMessage(data.error);
-            } else {
-                // Back to waiting for a new message on the same number. The 20-minute auto-burn
-                // window is NOT reset here — it keeps counting down from the first message, so the
-                // user can request as many additional messages as they like, all within that same
-                // original 20 minutes.
+            if (data.error) { setMessage(data.error); }
+            else {
                 setSmsCode('Waiting for a new message...');
                 setSmsReceived(false);
                 setMessage('Another message requested, please wait...');
@@ -149,7 +179,6 @@ export default function SMSPage() {
         setLoading(false);
     };
 
-    // User pressed "Finish" after receiving a message → burn the code immediately on the server
     const finishSession = async () => {
         if (!numberData) return;
         setLoading(true);
@@ -175,36 +204,17 @@ export default function SMSPage() {
                 body: JSON.stringify({ action: 'setStatus', status: 8, id: numberData.activationId, voucher })
             });
             const data = await res.json();
-
-            if (data.error) {
-                // The server returned an explicit error (e.g. the code is no longer active) — show it,
-                // never fall through to printing an undefined result. The session is left untouched.
-                setMessage(data.error);
-                setLoading(false);
-                return;
-            }
-
-            // `outcome` is the server's authoritative answer for what actually happened to the
-            // voucher in the database. We trust this field alone — never local component state.
+            if (data.error) { setMessage(data.error); setLoading(false); return; }
             switch (data.outcome) {
                 case 'burned':
-                    // At least one message had already been received on this number, so the cancel
-                    // was instant and local — no provider wait involved.
                     setMessage('Number canceled and the code has been burned.');
-                    resetSession();
-                    break;
+                    resetSession(); break;
                 case 'returned_to_valid':
                     setMessage('Number canceled and the code has been returned for reuse.');
-                    resetSession();
-                    break;
+                    resetSession(); break;
                 case 'early_cancel_denied':
-                    setMessage('Cannot cancel yet, please wait two minutes.');
-                    // numberData stays as-is — the activation is still alive and usable.
-                    break;
+                    setMessage('Cannot cancel yet, please wait two minutes.'); break;
                 default:
-                    // 'still_active' or anything unexpected: the code was NOT burned by the server,
-                    // so keep the current session exactly as it was instead of leaving the UI in a
-                    // broken/ambiguous state.
                     setMessage('Could not cancel right now. Your number and code are still active — you can try again or press Finish.');
             }
         } catch { setMessage('A connection error occurred while canceling. Your number is still active — please try again.'); }
@@ -223,10 +233,10 @@ export default function SMSPage() {
     const formatRemaining = (ms) => {
         if (ms === null) return '';
         const totalSec = Math.max(0, Math.floor(ms / 1000));
-        const m = Math.floor(totalSec / 60);
-        const s = totalSec % 60;
-        return `${m}:${s.toString().padStart(2, '0')}`;
+        return `${Math.floor(totalSec / 60)}:${(totalSec % 60).toString().padStart(2, '0')}`;
     };
+
+    const isPrem = isPremiumVoucher(voucher);
 
     return (
         <>
@@ -239,11 +249,30 @@ export default function SMSPage() {
                     </h1>
                     <p style={{ color:'#bdbdbd', fontSize:'1.2rem', marginBottom:'25px' }}>Digital Number Activation Platform</p>
 
-                    <div style={{ marginBottom:'20px', padding:'30px', background:'rgba(255,255,255,0.04)', backdropFilter:'blur(10px)', border:'1px solid rgba(255,255,255,0.1)', borderRadius:'15px', boxShadow:'0 8px 32px rgba(0,0,0,0.5)' }}>
+                    {/* Merge banner — visible when no active session */}
+                    {!numberData && (
+                        <p style={{ color:'#ffca28', fontSize:'13px', marginBottom:'15px' }}>
+                            Have 2 standard codes?{' '}
+                            <a href="/merge" style={{ color:'#ffca28', fontWeight:'bold', textDecoration:'underline' }}>
+                                Merge them → get a Premium code
+                            </a>
+                            {' '}(unlocks all countries)
+                        </p>
+                    )}
+
+                    <div style={{ marginBottom:'20px', padding:'30px', background:'rgba(255,255,255,0.04)', backdropFilter:'blur(10px)', border:`1px solid ${isPrem ? 'rgba(255,202,40,0.4)' : 'rgba(255,255,255,0.1)'}`, borderRadius:'15px', boxShadow:'0 8px 32px rgba(0,0,0,0.5)' }}>
+
+                        {/* Premium badge */}
+                        {isPrem && (
+                            <div style={{ display:'inline-block', background:'linear-gradient(90deg,#f57f17,#ffca28)', color:'#000', fontWeight:'bold', fontSize:'12px', padding:'3px 12px', borderRadius:'20px', marginBottom:'12px' }}>
+                                ⭐ PREMIUM — All Countries Unlocked
+                            </div>
+                        )}
+
                         <div style={{ marginBottom:'20px' }}>
                             <label style={{ display:'block', marginBottom:'10px', color:'#f0f0f0', fontWeight:'bold' }}>Activation Code:</label>
                             <input type="text" value={voucher} onChange={(e) => setVoucher(e.target.value)} disabled={numberData !== null}
-                                style={{ padding:'12px', width:'80%', maxWidth:'300px', textAlign:'center', borderRadius:'8px', border:'none', background:'#fff', color:'#1a1a1a', fontSize:'16px', fontWeight:'bold' }}
+                                style={{ padding:'12px', width:'80%', maxWidth:'300px', textAlign:'center', borderRadius:'8px', border:`2px solid ${isPrem ? '#ffca28' : 'transparent'}`, background:'#fff', color:'#1a1a1a', fontSize:'16px', fontWeight:'bold' }}
                                 placeholder="Enter your code here" />
                         </div>
 
@@ -251,7 +280,7 @@ export default function SMSPage() {
                             <div>
                                 <label style={{ color:'#f0f0f0', marginRight:'5px' }}>Country: </label>
                                 <select value={country} onChange={(e) => setCountry(e.target.value)} style={{ padding:'8px', borderRadius:'5px', border:'none', color:'#1a1a1a', fontWeight:'bold' }}>
-                                    {countries.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                                    {availableCountries.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                                 </select>
                             </div>
                             <div>
@@ -263,7 +292,7 @@ export default function SMSPage() {
                         </div>
 
                         <button onClick={getNumber} disabled={loading || numberData !== null}
-                            style={{ padding:'12px 30px', background:'linear-gradient(90deg,#e53935,#b71c1c)', color:'#fff', border:'none', borderRadius:'25px', cursor:'pointer', fontSize:'18px', fontWeight:'bold', boxShadow:'0 4px 15px rgba(229,57,53,0.4)', opacity:(loading || numberData) ? 0.6 : 1 }}>
+                            style={{ padding:'12px 30px', background: isPrem ? 'linear-gradient(90deg,#f57f17,#ffca28)' : 'linear-gradient(90deg,#e53935,#b71c1c)', color: isPrem ? '#000' : '#fff', border:'none', borderRadius:'25px', cursor:'pointer', fontSize:'18px', fontWeight:'bold', boxShadow: isPrem ? '0 4px 15px rgba(255,202,40,0.4)' : '0 4px 15px rgba(229,57,53,0.4)', opacity:(loading || numberData) ? 0.6 : 1 }}>
                             {loading ? 'Loading...' : 'Get a New Number'}
                         </button>
                     </div>
@@ -275,12 +304,11 @@ export default function SMSPage() {
                     )}
 
                     {numberData && (
-                        <div style={{ padding:'25px', border:'2px solid #e53935', borderRadius:'15px', marginTop:'20px', background:'rgba(0,0,0,0.5)', boxShadow:'0 0 20px rgba(229,57,53,0.25)' }}>
+                        <div style={{ padding:'25px', border:`2px solid ${isPrem ? '#ffca28' : '#e53935'}`, borderRadius:'15px', marginTop:'20px', background:'rgba(0,0,0,0.5)', boxShadow: isPrem ? '0 0 20px rgba(255,202,40,0.25)' : '0 0 20px rgba(229,57,53,0.25)' }}>
                             <h2 style={{ color:'#fff', fontSize:'2rem', margin:'10px 0' }}>Number: +{numberData.phoneNumber}</h2>
                             <h3 style={{ color:'#ff8a80', fontSize:'1.5rem', marginBottom:'20px' }}>Message: {smsCode}</h3>
 
                             {smsReceived ? (
-                                // ── After receiving the message: choose to finish or request another ──
                                 <div style={{ display:'flex', flexDirection:'column', gap:'12px', alignItems:'center' }}>
                                     {remainingMs !== null && (
                                         <p style={{ color:'#ffca28', fontSize:'14px', margin:0 }}>
@@ -299,7 +327,6 @@ export default function SMSPage() {
                                     </div>
                                 </div>
                             ) : (
-                                // ── Before receiving a message (or waiting for an additional one after Request Another) ──
                                 <>
                                     {remainingMs !== null && (
                                         <p style={{ color:'#ffca28', fontSize:'14px', margin:'0 0 15px' }}>
