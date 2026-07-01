@@ -56,10 +56,12 @@ export async function POST(request) {
             const valid = await kv.smembers('valid_vouchers');
             const active = await kv.smembers('active_vouchers');
             const burned = await kv.smembers('burned_vouchers');
+            const premium = await kv.smembers('premium_vouchers');
             return NextResponse.json({
                 valid: valid || [],
                 active: active || [],
-                burned: burned || []
+                burned: burned || [],
+                premium: premium || [],
             });
         }
 
@@ -95,15 +97,16 @@ export async function POST(request) {
             await kv.srem('valid_vouchers', code);
             await kv.srem('active_vouchers', code);
             await kv.srem('burned_vouchers', code);
+            await kv.srem('premium_vouchers', code);
             await kv.del(`first_sms_at:${code}`);
             await kv.del(`requested_another:${code}`);
             return NextResponse.json({ success: true });
         }
 
-        // Resetting an active code back to valid — only needs the single admin password
         if (action === 'reset_code') {
             await kv.srem('active_vouchers', code);
             await kv.srem('burned_vouchers', code);
+            await kv.srem('premium_vouchers', code);
             await kv.sadd('valid_vouchers', code);
             await kv.del(`first_sms_at:${code}`);
             await kv.del(`requested_another:${code}`);
