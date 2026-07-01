@@ -19,7 +19,7 @@ const STANDARD_COUNTRIES = [
     { id: '4',   name: 'Philippines' },
 ];
 
-// Premium countries (expensive) — only available to PREM-... vouchers
+// Premium countries (expensive) — only selectable with PREM-... vouchers
 const PREMIUM_COUNTRIES = [
     { id: '187', name: 'United States' },
     { id: '53',  name: 'Saudi Arabia' },
@@ -30,6 +30,12 @@ const PREMIUM_COUNTRIES = [
     { id: '116', name: 'Jordan' },
     { id: '54',  name: 'Mexico' },
     { id: '111', name: 'Qatar' },
+];
+
+// All countries combined — premium ones shown with ⭐ and disabled for standard vouchers
+const ALL_COUNTRIES = [
+    ...STANDARD_COUNTRIES.map(c => ({ ...c, premium: false })),
+    ...PREMIUM_COUNTRIES.map(c => ({ ...c, premium: true })),
 ];
 
 const isPremiumVoucher = (v) => typeof v === 'string' && v.toUpperCase().startsWith('PREM-');
@@ -50,17 +56,17 @@ export default function SMSPage() {
 
     const tickRef = useRef(null);
 
-    // Countries available depend on whether the entered voucher is premium
-    const availableCountries = isPremiumVoucher(voucher)
-        ? [...STANDARD_COUNTRIES, ...PREMIUM_COUNTRIES]
-        : STANDARD_COUNTRIES;
+    const isPrem = isPremiumVoucher(voucher);
 
-    // When voucher type changes, reset the country selection to the first available option
-    // so a standard-country selection doesn't get stuck when switching to premium and back.
+    // When switching from premium to standard voucher, reset country to first standard one
+    // if the currently selected country is a premium-only one.
     useEffect(() => {
-        setCountry(availableCountries[0].id);
+        if (!isPrem) {
+            const currentIsPremium = PREMIUM_COUNTRIES.some(c => c.id === country);
+            if (currentIsPremium) setCountry(STANDARD_COUNTRIES[0].id);
+        }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isPremiumVoucher(voucher)]);
+    }, [isPrem]);
 
     // ── Persist / restore session ──
     useEffect(() => {
@@ -236,8 +242,6 @@ export default function SMSPage() {
         return `${Math.floor(totalSec / 60)}:${(totalSec % 60).toString().padStart(2, '0')}`;
     };
 
-    const isPrem = isPremiumVoucher(voucher);
-
     return (
         <>
             <style dangerouslySetInnerHTML={{__html: `html,body{margin:0!important;padding:0!important;background:#0a0a0a!important;overflow-x:hidden}`}} />
@@ -280,8 +284,23 @@ export default function SMSPage() {
                             <div>
                                 <label style={{ color:'#f0f0f0', marginRight:'5px' }}>Country: </label>
                                 <select value={country} onChange={(e) => setCountry(e.target.value)} style={{ padding:'8px', borderRadius:'5px', border:'none', color:'#1a1a1a', fontWeight:'bold' }}>
-                                    {availableCountries.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                                    {ALL_COUNTRIES.map(c => (
+                                        <option
+                                            key={c.id}
+                                            value={c.id}
+                                            disabled={c.premium && !isPrem}
+                                            style={{ color: c.premium ? (isPrem ? '#b45309' : '#999') : '#1a1a1a' }}
+                                        >
+                                            {c.premium ? `⭐ ${c.name}` : c.name}
+                                        </option>
+                                    ))}
                                 </select>
+                                {!isPrem && (
+                                    <p style={{ color:'#888', fontSize:'11px', margin:'5px 0 0', textAlign:'left' }}>
+                                        ⭐ = Premium only —{' '}
+                                        <a href="/merge" style={{ color:'#ffca28', textDecoration:'underline' }}>merge 2 codes to unlock</a>
+                                    </p>
+                                )}
                             </div>
                             <div>
                                 <label style={{ color:'#f0f0f0', marginRight:'5px' }}>Service: </label>
